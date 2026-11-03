@@ -6,20 +6,20 @@ It's built from the same parts as [TeenyTinyGPT](https://github.com/Programming-
 
 ```mermaid
 flowchart LR
-  A["text<br/>'The sea was angry that day'"] --> B["0. Tokenizer (BPE)<br/>[_the, _sea, _was, _an, g, ry, _that, _day]"]
-  B --> C["1. Embeddings<br/>a vector for<br/>each token"]
-  C --> D["2. Attention<br/>every token looks<br/>at every other token"]
-  D --> E["3. Multilayer perceptron<br/>process each token"]
-  E --> F["4. Average<br/>one vector for<br/>the whole passage"]
+  A["text<br/>'The sea was angry that day'"] --> B["Tokenizer (BPE)<br/>[_the, _sea, _was, _an, g, ry, _that, _day]"]
+  B --> C["Embeddings<br/>a vector for<br/>each token"]
+  C --> D["Attention<br/>every token looks<br/>at every other token"]
+  D --> E["Multilayer perceptron<br/>process each token"]
+  E --> F["Average<br/>one vector for<br/>the whole passage"]
 ```
 
-In `setup()`, the sketch trains the tokenizer and turns the text into tokens. Then every frame of `draw()` is one step of training the embeddings model. You'll see the loss and the results for a search, which updates every 100 steps (or when you press enter). Open the console to see the tokenizer's first new tokens and an example training pair every 100 steps.
+In `setup()`, the sketch trains the tokenizer and turns the text into tokens. Then every frame of `draw()` is one step of training the embeddings model. You'll see the loss and the results for a search, which updates every 100 steps (or when you press enter).
 
 ## 0. Tokens: Byte Pair Encoding
 
 First, the sketch _learns_ a vocabulary of tokens (1,000) from the text with **byte pair encoding** (BPE). This is the same idea GPT models use, and the same `bpe.js` as the [Byte Pair Encoding](https://github.com/Programming-from-A-to-Z/BPE-Tokenizer) example and [TeenyTinyGPT](https://github.com/Programming-from-A-to-Z/TeenyTinyGPT.js).
 
-One difference here is that the sketch cleans the text to include lowercase letters only, with a space in front of every word (no punctuation). This simplifies the text for the model to predict embeddings and it's fine to do so because the embedding model only reads text and it never has to write any text. The embeddings model [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) lowercases everything too.
+One difference here is that the sketch cleans the text (the `clean()` function in `sketch.js`) to include lowercase letters only, with a space in front of every word (no punctuation). This simplifies the text for the model to predict embeddings and it's fine to do so because the embedding model only reads text and it never has to write any text. The embeddings model [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) lowercases everything too.
 
 ## 1. Training pairs of "similar" text
 
@@ -34,7 +34,7 @@ partners.push(data.slice(middle, middle + partnerLength));
 
 With TeenyTinyGPT, the target is the input shifted by one token and the model learns "what comes next?" one token at a time. TeenyTinyEmbedder learns to predict that two neighboring passages are similar. It's the idea behind word2vec ("You shall know a word by the company it keeps," —J.R. Firth).
 
-The lengths are random, from 2 to 16 tokens, so the model learns to compare passages of text with variable lengths.
+The lengths are random, from 2 to 16 tokens, so the model learns to compare passages of text with variable lengths. Each batch picks one length for all its anchors and one for all its partners, because a tensor has to be a rectangle.
 
 ## 2. Embeddings (and no positions!)
 
@@ -44,7 +44,7 @@ Just like TeenyTinyGPT, every token in the vocabulary gets a vector of 64 number
 this.tokenEmbedding = tf.layers.embedding({ inputDim: vocabSize, outputDim: embedSize });
 ```
 
-For this implementation, however, there's no position embedding! Most embedding models do have positions, since word order matters ("dog bites man" vs. "man bites dog"). But here, every pair in a training batch is the same length, so the model never learns to ignore length. With positions, all 3-token lines get a similar "I am 3 tokens long" signature, and short queries match lines of the same length instead of lines about the same thing. The embedder also averages all the token vectors together (see step 4 below), which mostly erases the word order anyway. So here, the model sees text as a "bag of tokens." The tokens still look at each other with attention!
+For this implementation, however, there's no position embedding! Most embedding models do have positions, since word order matters ("dog bites man" vs. "man bites dog"). But here, every anchor in a training batch is the same length (and so is every partner), so the model never learns to ignore length. With positions, all 3-token lines get a similar "I am 3 tokens long" signature, and short queries match lines of the same length instead of lines about the same thing. The embedder also averages all the token vectors together (see step 4 below), which mostly erases the word order anyway. So here, the model sees text as a "bag of tokens." The tokens still look at each other with attention!
 
 ## 3. Attention without a mask
 
@@ -91,7 +91,7 @@ let similarity = tf.matMul(a, b, false, true); // [32, 32]
 
 The `false, true` means "transpose `b` first" (the same trick as attention in TeenyTinyGPT), so `[32, 64] × [64, 32]` gives `[32, 32]`. The number in row _i_, column _j_ is the dot product of anchor _i_ and partner _j_.
 
-Then we need to compare these scores to a matrix of "correct answers". You can think of each row as a multiple-choice question: which slot is my partner? The right answers are all on the diagonal! So the answer key is a grid with 1s on the diagonal and 0s everywhere else. This is known as the **identity matrix**. `tf.eye()` makes one (it's named for _I_, the math symbol for the identity matrix):
+Then we need to compare these scores to a matrix of "correct answers." You can think of each row as a multiple-choice question: which slot is my partner? The right answers are all on the diagonal! So the answer key is a grid with 1s on the diagonal and 0s everywhere else. This is known as the **identity matrix**. `tf.eye()` makes one (it's named for _I_, the math symbol for the identity matrix):
 
 ```js
 // 32x32 identity matrix
@@ -116,7 +116,7 @@ Guessing evenly among the 32 partners gives a loss of −log(1/32) ≈ 3.47. The
 
 ## 6. Query
 
-Now we can commpare a query's embedding with embeddings for a dataset.
+Now we can compare a query's embedding with embeddings for every line of the text.
 
 ```js
 let query = embedder.embeddings([tokenizer.encode(clean(queryInput.value()))])[0];
@@ -125,7 +125,7 @@ for (let line of lines) {
 }
 ```
 
-Notice how when the training starts, the search query results in mostly lines that match words. This is because lines that have the same tokens have some of the same embeddings. After a while, the model finds finds lines that are related but don't share any words! For example "bees and flowers" might match to "With only butterflies to brood" and searching "a bird sings" would find "Oh, some wise man from the skies!".
+Notice how when the training starts, the search query results in mostly lines that match words. This is because lines that have the same tokens have some of the same embeddings. After a while, the model finds lines that are related but don't share any words! For example "bees and flowers" might match to "With only butterflies to brood" and searching "a bird sings" would find "Oh, some wise man from the skies!".
 
 The model only learns which words show up near each other in this source text, about 30,000 words of Dickinson. It doesn't know what an ocean is!
 
